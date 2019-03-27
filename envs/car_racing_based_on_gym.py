@@ -12,6 +12,10 @@ from gym.utils import colorize, seeding, EzPickle
 import pyglet
 from pyglet import gl
 
+import numpy as np
+
+import time
+
 # Easiest continuous control task to learn from pixels, a top-down racing environment.
 # Discreet control is reasonable in this environment as well, on/off discretisation is
 # fine.
@@ -51,16 +55,20 @@ TRACK_RAD   = 900/SCALE  # Track is heavily morphed circle with this radius
 PLAYFIELD   = 2000/SCALE # Game over boundary
 FPS         = 50
 ZOOM        = 2.7        # Camera zoom
-ZOOM_FOLLOW = True       # Set to False for fixed view (don't use zoom)
+ZOOM_FOLLOW = False      # Set to False for fixed view (don't use zoom)
 
 
 TRACK_DETAIL_STEP = 21/SCALE
-TRACK_TURN_RATE = 0.31
-TRACK_WIDTH = 40/SCALE
+TRACK_TURN_RATE = 0.1
+TRACK_WIDTH = 80/SCALE
 BORDER = 8/SCALE
 BORDER_MIN_COUNT = 4
 
 ROAD_COLOR = [0.4, 0.4, 0.4]
+
+TRACK_WEIGHT = 1.0
+SPEED_WEIGHT = 1
+PART_WEIGHT = 0.1
 
 class FrictionDetector(contactListener):
     def __init__(self, env):
@@ -216,7 +224,8 @@ class CarRacing(gym.Env, EzPickle):
                 i1 = i
                 break
         if self.verbose == 1:
-            print("Track generation: %i..%i -> %i-tiles track" % (i1, i2, i2-i1))
+            pass
+            #print("Track generation: %i..%i -> %i-tiles track" % (i1, i2, i2-i1))
         assert i1!=-1
         assert i2!=-1
 
@@ -318,10 +327,56 @@ class CarRacing(gym.Env, EzPickle):
             if self.tile_visited_count==len(self.track):
                 done = True
             x, y = self.car.hull.position
+            # print("x:{},y:{},angle:{}".format(x,y,self.car.hull.angle))
+            # print(*self.track[0][1:4])
+
             if abs(x) > PLAYFIELD or abs(y) > PLAYFIELD:
                 done = True
                 step_reward = -100
 
+        def get_state():
+            s_list = self.state
+            state_left, state_front, state_right, state_left_front, state_right_front = 0, 0, 0, 0, 0
+
+
+            for i in range(int(STATE_W / 2 - 1)):
+                if s_list[73][45 - i][1] >= 200:
+                    state_left = i
+                    break
+
+
+            for i in range(int(STATE_W / 2 - 1)):
+                if s_list[73][48 + i][1] >= 200:
+                    state_right = i
+                    break
+
+            for i in range(int(STATE_H - 30)):
+                if i < int(STATE_H - 31):
+                    if s_list[67 - i][47][1] >= 200:
+                        state_front = i
+                        break
+                else:
+                    state_front = i
+                    break
+
+            for i in range(int(STATE_W / 2 - 1)):
+                if s_list[73 - i][46 - i][1] >= 200:
+                        state_left_front = i
+                        break
+                else:
+                    state_left_front = i
+            for i in range(int(STATE_W / 2 - 1)):
+                if s_list[73 - i][49 + i][1] >= 200:
+                    state_right_front = i
+                    break
+                else:
+                    state_right_front = i
+
+            car_speed = round(np.sqrt(np.square(self.car.hull.linearVelocity[0]) + np.square(self.car.hull.linearVelocity[1]))) / 10
+
+            return [state_left, state_left_front, state_front, state_right_front, state_right, car_speed]
+
+        self.state = get_state()
         return self.state, step_reward, done, {}
 
     def render(self, mode='human'):
@@ -390,7 +445,6 @@ class CarRacing(gym.Env, EzPickle):
         arr = np.fromstring(image_data.data, dtype=np.uint8, sep='')
         arr = arr.reshape(VP_H, VP_W, 4)
         arr = arr[::-1, :, 0:3]
-
         return arr
 
     def close(self):
@@ -413,11 +467,46 @@ class CarRacing(gym.Env, EzPickle):
                 gl.glVertex3f(k*x + 0, k*y + 0, 0)
                 gl.glVertex3f(k*x + 0, k*y + k, 0)
                 gl.glVertex3f(k*x + k, k*y + k, 0)
+
         for poly, color in self.road_poly:
             gl.glColor4f(color[0], color[1], color[2], 1)
             for p in poly:
                 gl.glVertex3f(p[0], p[1], 0)
         gl.glEnd()
+        try:
+            gl.glBegin(gl.GL_LINES)
+            gl.glColor4f(0.9, 0.0, 0.9, 1.0)
+            x, y = self.car.hull.position
+            check_line = []
+            r=0.6
+            tx = x - np.sin(self.car.hull.angle) * self.state[2]*r*0.7
+            ty = y + np.cos(self.car.hull.angle) * self.state[2]*r*0.7
+            check_line.append([tx, ty])
+
+            tx = x + np.cos(self.car.hull.angle) * self.state[4]*r
+            ty = y + np.sin(self.car.hull.angle) * self.state[4]*r
+            check_line.append([tx, ty])
+
+            tx = x + np.cos(self.car.hull.angle+0.75) * self.state[3] * r*1.3
+            ty = y + np.sin(self.car.hull.angle+0.75) * self.state[3] * r*1.3
+            check_line.append([tx, ty])
+
+            tx = x - np.cos(self.car.hull.angle) * self.state[0]*r
+            ty = y - np.sin(self.car.hull.angle) * self.state[0]*r
+            check_line.append([tx, ty])
+
+            tx = x - np.cos(0.75-self.car.hull.angle) * self.state[1] * r*1.3
+            ty = y + np.sin(0.75-self.car.hull.angle) * self.state[1] * r*1.3
+            check_line.append([tx, ty])
+
+            for plor in check_line:
+                tx, ty = plor
+                gl.glVertex3f(x, y, 0)
+                gl.glVertex3f(tx, ty, 0)
+            gl.glEnd()
+        except:
+            gl.glEnd()
+
 
     def render_indicators(self, W, H):
         gl.glBegin(gl.GL_QUADS)
@@ -472,26 +561,40 @@ if __name__=="__main__":
     env.render()
     env.viewer.window.on_key_press = key_press
     env.viewer.window.on_key_release = key_release
-    record_video = False
-    if record_video:
-        from gym.wrappers.monitor import Monitor
-        env = Monitor(env, '/tmp/video-test', force=True)
+
     isopen = True
     while isopen:
         env.reset()
         total_reward = 0.0
         steps = 0
         restart = False
+        first_front = 5
+        for i in range(50):
+            env.step([0.0, 0.0, 0.0])
+            env.render()
         while True:
             s, r, done, info = env.step(a)
             total_reward += r
-            if steps % 200 == 0 or done:
-                print("\naction " + str(["{:+0.2f}".format(x) for x in a]))
-                print("step {} total_reward {:+0.2f}".format(steps, total_reward))
-                #import matplotlib.pyplot as plt
-                #plt.imshow(s)
-                #plt.savefig("test.jpeg")
+
+            speed = s[3]
+            s1 = (-0.5 * s[0] ** 2 + 20 * s[0]) * 1 / 400 - 0.2
+            s2 = (-0.5 * s[4] ** 2 + 20 * s[4]) * 1 / 400 - 0.2
+            r1 = round((s1 + s2) / 2, 2)
+
+            r2 = speed ** 0.5 * SPEED_WEIGHT
+            r = r1 + r2 + r * PART_WEIGHT
+            # modify the reward
+            if speed == 0:
+                r = -0.1
+            if s[0] == 1 or s[2] == 1:
+                r = -0.1
+                print("over")
+                done = True
+
+
+
             steps += 1
-            isopen = env.render()
-            if done or restart or isopen == False: break
+
+            env.render()
+            if done or restart: break
     env.close()
